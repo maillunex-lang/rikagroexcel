@@ -1,27 +1,118 @@
-const $=s=>document.querySelector(s),E=PriceEngine;let base=null,sources=[],results=[],page=0;const money=v=>E.price(v)===null?'—':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:4}).format(E.price(v));const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function invalidate(){results=[];$('#results').hidden=true;$('#run').disabled=!base||!sources.length;$('#message').textContent=''}
-async function read(file){if(file.size>40*1024*1024)throw Error('Файл больше 40 МБ: '+file.name);const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellStyles:true,cellNF:true,cellDates:true});const item={filename:file.name,wb,sheet:wb.SheetNames[0]};setSheet(item);return item}
-function setSheet(s){s.rows=XLSX.utils.sheet_to_json(s.wb.Sheets[s.sheet],{header:1,defval:'',blankrows:true});Object.assign(s,E.detect(s.rows));s.prices=s.price>=0?[s.price]:[]}
-function config(s,isBase,index){let h=s.rows[s.header]||[],max=Math.max(h.length,...s.rows.slice(s.header,s.header+20).map(r=>r.length));const opts=(val,empty)=>`<option value="-1" ${val===-1?'selected':''}>${empty}</option>`+Array.from({length:max},(_,i)=>`<option value="${i}" ${val===i?'selected':''}>${XLSX.utils.encode_col(i)} · ${esc(h[i]||'Без заголовка')}</option>`).join('');return `<div class="config" data-base="${isBase}" data-index="${index}"><div class="config-top"><strong>▤ ${esc(s.filename)}</strong><button data-remove aria-label="Удалить файл">×</button></div><div class="fields"><label>Лист<select data-field="sheet">${s.wb.SheetNames.map(n=>`<option ${n===s.sheet?'selected':''}>${esc(n)}</option>`).join('')}</select></label><label>Строка заголовков<input data-field="header" type="number" min="1" max="${s.rows.length}" value="${s.header+1}"></label><label>Код / артикул<select data-field="code">${opts(s.code,'Не выбран')}</select></label><label>Номенклатура<select data-field="name">${opts(s.name,'Не выбрана')}</select></label>${isBase?`<label>Текущая цена (для сравнения)<select data-field="price">${opts(s.price,'Не выбрана')}</select></label>`:`<div class="multi-price"><strong>Колонки цен (можно несколько)</strong><div class="price-checks">${Array.from({length:max},(_,i)=>`<label class="price-check"><input type="checkbox" data-price-col="${i}" ${s.prices.includes(i)?'checked':''}><span>${XLSX.utils.encode_col(i)} · ${esc(h[i]||'Без заголовка')}</span></label>`).join('')}</div></div>`}<label>Строк на листе<span style="padding:8px">${s.rows.length.toLocaleString('ru-RU')}</span></label></div></div>`}
-function renderConfigs(){$('#baseConfig').innerHTML=base?config(base,true,0):'';$('#pricesConfig').innerHTML=sources.map((s,i)=>config(s,false,i)).join('');document.querySelectorAll('.config').forEach(el=>{const isBase=el.dataset.base==='true',idx=+el.dataset.index,s=isBase?base:sources[idx];el.querySelector('[data-remove]').onclick=()=>{if(isBase)base=null;else sources.splice(idx,1);invalidate();renderConfigs()};el.querySelectorAll('[data-price-col]').forEach(c=>c.onchange=()=>{const n=+c.dataset.priceCol;s.prices=c.checked?[...new Set([...s.prices,n])]:s.prices.filter(v=>v!==n);invalidate()});el.querySelectorAll('[data-field]').forEach(c=>c.onchange=()=>{let field=c.dataset.field;if(field==='sheet'){s.sheet=c.value;setSheet(s)}else if(field==='header'){s.header=Math.max(0,Math.min(s.rows.length-1,+c.value-1));let det=E.detect([s.rows[s.header]||[]]);s.code=det.code;s.name=det.name;s.price=det.price;s.prices=s.price>=0?[s.price]:[]}else s[field]=+c.value;invalidate();renderConfigs()})})}
-async function load(files,isBase){try{$('#message').textContent='Читаем Excel…';const items=[];for(const f of files){items.push(await read(f));if(isBase)break}if(isBase)base=items[0]||base;else sources.push(...items);invalidate();renderConfigs()}catch(e){$('#message').textContent='Не удалось прочитать файл. '+e.message}}
-for(const [input,drop,isBase]of [['#baseInput','#baseDrop',true],['#pricesInput','#pricesDrop',false]]){$(input).onchange=e=>{load(e.target.files,isBase);e.target.value=''};$(drop).ondragover=e=>{e.preventDefault();$(drop).classList.add('drag')};$(drop).ondragleave=()=>$(drop).classList.remove('drag');$(drop).ondrop=e=>{e.preventDefault();$(drop).classList.remove('drag');load(e.dataTransfer.files,isBase)}}
-$('#mode').onchange=invalidate;
-$('#run').onclick=()=>{try{if(!base||!sources.length)return;const mode=$('#mode').value;for(const s of [base,...sources]){if((mode==='code'&&s.code<0)||(mode==='name'&&s.name<0)||(mode==='both'&&s.code<0&&s.name<0))throw Error('Выберите колонки сопоставления: '+s.filename);if(s!==base&&!s.prices.length)throw Error('Выберите хотя бы одну колонку цены: '+s.filename)}results=E.matchMulti(base,sources,mode);if(!results.length)throw Error('Нет товаров. Проверьте строку заголовков и колонки.');$('#message').textContent='';page=0;$('#results').hidden=false;renderResults();$('#results').scrollIntoView({behavior:'smooth',block:'start'})}catch(e){$('#message').textContent=e.message}};
-function filtered(){const q=E.norm($('#search').value),f=$('#filter').value;return results.filter(r=>(f==='all'||r.status===f)&&E.norm(r.code+' '+r.name).includes(q))}
-function renderResults(){let found=results.filter(r=>r.chosen>=0).length,missing=results.filter(r=>r.status==='missing').length,conflicts=results.filter(r=>r.status==='conflict'&&r.chosen<0).length;$('#stats').innerHTML=[[results.length,'Товаров в файле'],[found,'Совпадений найдено'],[missing,'Без совпадений'],[conflicts,'Требуют выбора']].map(([n,t])=>`<div class="stat"><strong>${n.toLocaleString('ru-RU')}</strong><span>${t}</span></div>`).join('');const list=filtered(),pages=Math.max(1,Math.ceil(list.length/30));page=Math.min(page,pages-1);$('#rows').innerHTML=list.slice(page*30,page*30+30).map(r=>{let i=results.indexOf(r),c=r.candidates[r.chosen];return `<tr><td><small>${esc(r.code)}</small>${esc(r.name)}</td><td>${money(r.old)}</td><td>${r.status==='conflict'?`<select data-choice="${i}"><option value="-1">Не переносить</option>${r.candidates.map((v,k)=>`<option value="${k}" ${r.chosen===k?'selected':''}>${esc(v.label)}: ${money(v.price)} · ${esc(v.source)} · строка ${v.row}</option>`).join('')}</select>`:c?'<b>'+esc(c.label)+': '+money(c.price)+'</b>':'—'}</td><td><span class="status ${r.status}">${c?esc(c.source)+'<br>По '+r.by:r.status==='conflict'?'Разные цены':'Не найдено'}</span></td></tr>`}).join('');$('#count').textContent=list.length+' товаров';$('#page').textContent=`${page+1} / ${pages}`;$('#prev').disabled=page===0;$('#next').disabled=page>=pages-1;$('#download').disabled=!found;document.querySelectorAll('[data-choice]').forEach(c=>c.onchange=()=>{results[+c.dataset.choice].chosen=+c.value;renderResults()})}
-$('#prev').onclick=()=>{page--;renderResults()};$('#next').onclick=()=>{page++;renderResults()};for(const el of ['#search','#filter'])$(el).oninput=()=>{page=0;renderResults()};
-$('#download').onclick=()=>{try{
-const wb=XLSX.read(XLSX.write(base.wb,{type:'array',bookType:'xlsx'}),{type:'array',cellStyles:true,cellNF:true,cellDates:true});
-const ws=wb.Sheets[base.sheet];let range=XLSX.utils.decode_range(ws['!ref']||'A1');
-// Preserve every supplier and every selected price tier in separate output columns.
-const tiers=[];for(let si=0;si<sources.length;si++){const s=sources[si],head=s.rows[s.header]||[];for(const col of s.prices){tiers.push({si,col,label:(s.filename.replace(/\.[^.]+$/,'')+(s.prices.length>1?' ('+XLSX.utils.encode_col(col)+')':''))})}}
-const cols=tiers.map((tier,j)=>{const col=range.e.c+1+j;ws[XLSX.utils.encode_cell({r:base.header,c:col})]={t:'s',v:tier.label};return col});
-const report=[['Строка','Код','Номенклатура','Статус','Источник','Тип цены','Цена','Строка источника']];
-for(const r of results){const group=new Map();for(const c of r.candidates){const key=c.si+':'+c.col;if(!group.has(key))group.set(key,[]);group.get(key).push(c)}for(let j=0;j<tiers.length;j++){const tier=tiers[j],key=tier.si+':'+tier.col,options=group.get(key)||[];let chosen=options.length===1?options[0]:null;if(options.length>1){const values=new Set(options.map(v=>v.price));if(values.size===1)chosen=options[0];else if(r.chosen>=0){const selected=r.candidates[r.chosen];if(selected.si===tier.si&&selected.col===tier.col)chosen=selected}}
-if(chosen){const addr=XLSX.utils.encode_cell({r:r.row,c:cols[j]});ws[addr]={t:'n',v:chosen.price,z:'0.00'};report.push([r.row+1,r.code,r.name,'Перенесено',chosen.source,chosen.label,chosen.price,chosen.row])}
-else report.push([r.row+1,r.code,r.name,options.length?'Конфликт — пропущен':'Нет совпадения',tier.label,'','','']);}}
-range.e.c=Math.max(range.e.c,...cols);ws['!ref']=XLSX.utils.encode_range(range);
-let reportName='Отчёт сопоставления',n=1;while(wb.SheetNames.includes(reportName))reportName='Отчёт сопоставления '+n++;XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(report),reportName);
-XLSX.writeFile(wb,base.filename.replace(/\.[^.]+$/,'')+'_все_цены.xlsx');$('#message').textContent='Готово: каждый выбранный тип цены сохранён в отдельной колонке. Конфликтные цены не перезаписаны.'
-}catch(e){$('#message').textContent='Ошибка выгрузки: '+e.message}};
+const $ = s => document.querySelector(s);
+let base = null, sources = [];
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const colName = i => XLSX.utils.encode_col(i);
+const cleanName = name => name.replace(/\.[^.]+$/, '');
+const message = s => { $('#message').textContent = s; };
+function setSheet(item, reset = false) {
+  const ws = item.wb.Sheets[item.sheet];
+  item.rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:'', blankrows:true});
+  item.header = reset ? 0 : Math.max(0, Math.min(item.header || 0, item.rows.length - 1));
+  if (reset) item.selected = [];
+}
+async function read(file) {
+  if (file.size > 40 * 1024 * 1024) throw Error('Файл больше 40 МБ: ' + file.name);
+  const wb = XLSX.read(await file.arrayBuffer(), {type:'array', cellStyles:true, cellNF:true, cellDates:true});
+  if (!wb.SheetNames.length) throw Error('В файле нет листов: ' + file.name);
+  const item = {filename:file.name, wb, sheet:wb.SheetNames[0], header:0, selected:[]};
+  setSheet(item, true);
+  return item;
+}
+function maxCols(s) {
+  const ws = s.wb.Sheets[s.sheet];
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+  return Math.max(range.e.c + 1, ...s.rows.slice(0, Math.min(s.rows.length, 50)).map(r => r.length), 1);
+}
+function config(s, isBase, idx) {
+  const head = s.rows[s.header] || [];
+  const count = maxCols(s);
+  return '<div class="config" data-base="'+isBase+'" data-index="'+idx+'">'+
+    '<div class="config-top"><strong>▤ '+esc(s.filename)+'</strong><button data-remove aria-label="Удалить файл">×</button></div>'+
+    '<div class="fields"><label>Лист<select data-sheet>'+s.wb.SheetNames.map(n=>'<option '+(n===s.sheet?'selected':'')+'>'+esc(n)+'</option>').join('')+'</select></label>'+
+    '<label>Строка заголовков<input data-header type="number" min="1" max="'+Math.max(1,s.rows.length)+'" value="'+(s.header+1)+'"></label>'+
+    (isBase ? '<p class="base-note">Все существующие столбцы исходного файла сохраняются. Новые добавляются справа.</p>' :
+    '<div class="multi-price"><strong>Выберите столбцы для переноса</strong><div class="price-checks">'+
+    Array.from({length:count},(_,i)=>'<label class="price-check"><input type="checkbox" data-col="'+i+'" '+(s.selected.includes(i)?'checked':'')+'><span>'+colName(i)+' · '+esc(head[i] || 'Без заголовка')+'</span></label>').join('')+
+    '</div></div>')+'</div></div>';
+}
+function render() {
+  $('#baseConfig').innerHTML = base ? config(base,true,0) : '';
+  $('#pricesConfig').innerHTML = sources.map((s,i)=>config(s,false,i)).join('');
+  document.querySelectorAll('.config').forEach(el=>{
+    const isBase=el.dataset.base==='true', idx=Number(el.dataset.index), s=isBase?base:sources[idx];
+    el.querySelector('[data-remove]').onclick=()=>{if(isBase)base=null;else sources.splice(idx,1);render();};
+    el.querySelector('[data-sheet]').onchange=e=>{s.sheet=e.target.value;setSheet(s,true);render();};
+    el.querySelector('[data-header]').onchange=e=>{s.header=Math.max(0,Math.min(s.rows.length-1,Number(e.target.value)-1));render();};
+    el.querySelectorAll('[data-col]').forEach(input=>input.onchange=()=>{
+      const col=Number(input.dataset.col);
+      s.selected=input.checked?[...s.selected,col].sort((a,b)=>a-b):s.selected.filter(x=>x!==col);
+      update();
+    });
+  });
+  update();
+}
+function update() {
+  const n=sources.reduce((a,s)=>a+s.selected.length,0);
+  $('#run').disabled=!base||!n;
+  $('#selection').textContent=n ? 'Выбрано столбцов: '+n : 'Отметьте столбцы, которые нужно добавить';
+}
+async function load(files,isBase) {
+  try {
+    message('Читаем Excel…');
+    const items=[];
+    for (const f of files) {items.push(await read(f));if(isBase)break;}
+    if(isBase)base=items[0]||base;else sources.push(...items);
+    message('');render();
+  } catch(e) {message('Ошибка чтения: '+e.message);}
+}
+for (const [input,drop,isBase] of [['#baseInput','#baseDrop',true],['#pricesInput','#pricesDrop',false]]) {
+  $(input).onchange=e=>{load(e.target.files,isBase);e.target.value='';};
+  $(drop).ondragover=e=>{e.preventDefault();$(drop).classList.add('drag');};
+  $(drop).ondragleave=()=>$(drop).classList.remove('drag');
+  $(drop).ondrop=e=>{e.preventDefault();$(drop).classList.remove('drag');load(e.dataTransfer.files,isBase);};
+}
+function appendColumns(wb, baseItem, supplierItems) {
+  const ws=wb.Sheets[baseItem.sheet];
+  const range=XLSX.utils.decode_range(ws['!ref']||'A1');
+  const originalEnd=range.e.c;
+  let nextCol=originalEnd+1;
+  let maxRow=range.e.r;
+  for (const s of supplierItems) {
+    const sourceWs=s.wb.Sheets[s.sheet];
+    for (const sourceCol of s.selected) {
+      const targetCol=nextCol++;
+      const name=cleanName(s.filename)+(s.selected.length>1?' ('+colName(sourceCol)+')':'');
+      const headerAddr=XLSX.utils.encode_cell({r:baseItem.header,c:targetCol});
+      ws[headerAddr]={t:'s',v:name};
+      maxRow=Math.max(maxRow,baseItem.header);
+      const sourceRange=XLSX.utils.decode_range(sourceWs['!ref']||'A1');
+      for (let row=s.header+1;row<=sourceRange.e.r;row++) {
+        const sourceCell=sourceWs[XLSX.utils.encode_cell({r:row,c:sourceCol})];
+        if (!sourceCell || sourceCell.t==='z') continue;
+        const targetRow=baseItem.header+1+(row-s.header-1);
+        const dest=XLSX.utils.encode_cell({r:targetRow,c:targetCol});
+        const copy={...sourceCell};
+        delete copy.f; delete copy.F;
+        if (sourceCell.f) {
+          copy.t='s';copy.v=sourceCell.w ?? String(sourceCell.v ?? '');
+        }
+        ws[dest]=copy;
+        maxRow=Math.max(maxRow,targetRow);
+      }
+    }
+  }
+  range.e.c=Math.max(originalEnd,nextCol-1);
+  range.e.r=Math.max(range.e.r,maxRow);
+  ws['!ref']=XLSX.utils.encode_range(range);
+  return nextCol-originalEnd-1;
+}
+$('#run').onclick=()=>{
+  try {
+    if(!base)throw Error('Загрузите основной файл.');
+    if(!sources.some(s=>s.selected.length))throw Error('Выберите хотя бы один столбец.');
+    const wb=XLSX.read(XLSX.write(base.wb,{type:'array',bookType:'xlsx'}),{type:'array',cellStyles:true,cellNF:true,cellDates:true});
+    const n=appendColumns(wb,base,sources);
+    XLSX.writeFile(wb,cleanName(base.filename)+'_с_добавленными_столбцами.xlsx');
+    message('Готово! Добавлено столбцов: '+n+'. Исходный файл не перезаписан.');
+  } catch(e) {message('Ошибка: '+e.message);}
+};
