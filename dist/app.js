@@ -58,9 +58,10 @@ function render() {
   update();
 }
 function update() {
-  manualChoices.clear();reviewItems=[];$('#review').hidden=true;
+  manualChoices.clear();reviewItems=[];$('#review').hidden=true;$('#preview').hidden=true;
   const n=sources.reduce((a,s)=>a+s.selected.length,0);
   $('#run').disabled=!base||!n;
+  $('#previewButton').disabled=!base||!n;
   $('#selection').textContent=n ? 'Выбрано столбцов: '+n : 'Отметьте столбцы, которые нужно добавить';
 }
 async function load(files,isBase) {
@@ -165,13 +166,67 @@ function saveReviewChoice(){
   const item=reviewItems[reviewCursor];
   if(!item)return;
   const checked=document.querySelector('input[name="suggest"]:checked');
-  manualChoices.set(reviewKey(item.si,item.row),checked?Number(checked.value):-1);
+  manualChoices.set(reviewKey(item.si,item.row),checked?Number(checked.value):-1);$('#preview').hidden=true;
 }
 $('#reviewPrev').onclick=()=>{saveReviewChoice();reviewCursor=Math.max(0,reviewCursor-1);renderReview();};
 $('#reviewNext').onclick=()=>{saveReviewChoice();if(reviewCursor+1===reviewItems.length){$('#review').hidden=true;message('Ручная проверка завершена. Можно скачать Excel.');}else{reviewCursor++;renderReview();}};
 $('#reviewClose').onclick=()=>{$('#review').hidden=true;};
 $('#reviewButton').onclick=()=>{try{openReview();}catch(e){message(e.message);}};
-$('#manual').onchange=()=>{$('#reviewButton').hidden=!$('#manual').checked;manualChoices.clear();reviewItems=[];$('#review').hidden=true;};
+$('#manual').onchange=()=>{$('#reviewButton').hidden=!$('#manual').checked;manualChoices.clear();reviewItems=[];$('#review').hidden=true;$('#preview').hidden=true;};
+function matchStatus(data,b,s,index,mode){
+  const code=b.code>=0?norm(data[b.code]):'',name=b.name>=0?norm(data[b.name]):'';
+  if(mode!=='name'&&code&&s.code>=0){
+    const rows=index.byCode.get(code)||[];
+    if(rows.length>1)return 'ambiguous';
+    if(rows.length===1)return 'matched';
+  }
+  if(mode!=='code'&&name&&s.name>=0){
+    const rows=index.byName.get(name)||[];
+    if(rows.length>1)return 'ambiguous';
+    if(rows.length===1)return 'matched';
+  }
+  return 'missing';
+}
+function previewMatches(b,items,mode,choices=manualChoices){
+  if(!b)throw Error('Загрузите исходный файл.');
+  const end=XLSX.utils.decode_range(b.wb.Sheets[b.sheet]['!ref']||'A1').e.r;
+  const result=[];
+  for(let si=0;si<items.length;si++){
+    const s=items[si];
+    if(!s.selected.length)continue;
+    if(mode==='code'&&(b.code<0||s.code<0))throw Error('Укажите столбцы артикулов: '+s.filename);
+    if(mode==='name'&&(b.name<0||s.name<0))throw Error('Укажите столбцы названий: '+s.filename);
+    if(mode==='both'&&!((b.code>=0&&s.code>=0)||(b.name>=0&&s.name>=0)))throw Error('Укажите общие поля сопоставления: '+s.filename);
+    const index=buildIndex(s,mode),stats={filename:s.filename,total:0,matched:0,missing:0,ambiguous:0,manual:0,unmatched:[]};
+    for(let row=b.header+1;row<=end;row++){
+      const data=b.rows[row]||[];
+      if(!data.some(v=>norm(v)))continue;
+      stats.total++;
+      const key=reviewKey(si,row);
+      let status=matchStatus(data,b,s,index,mode);
+      if(choices.has(key)){
+        if(choices.get(key)>=0){status='matched';stats.manual++;}
+        else status='missing';
+      }
+      stats[status]++;
+      if(status!=='matched')stats.unmatched.push({row:row+1,code:b.code>=0?String(data[b.code]??''):'',name:b.name>=0?String(data[b.name]??''):'',status});
+    }
+    result.push(stats);
+  }
+  return result;
+}
+function showPreview(){
+  const stats=previewMatches(base,sources,$('#mode').value,$('#manual').checked?manualChoices:new Map());
+  const total=stats.reduce((a,s)=>a+s.total,0),matched=stats.reduce((a,s)=>a+s.matched,0),missing=stats.reduce((a,s)=>a+s.missing,0),ambiguous=stats.reduce((a,s)=>a+s.ambiguous,0);
+  $('#previewSummary').innerHTML='<div class="preview-metrics"><div><strong>'+total+'</strong><span>Проверено</span></div><div><strong>'+matched+'</strong><span>Совпало</span></div><div><strong>'+missing+'</strong><span>Не найдено</span></div><div><strong>'+ambiguous+'</strong><span>Неоднозначно</span></div></div>';
+  $('#previewSources').innerHTML=stats.map(s=>'<section class="preview-source"><h3>'+esc(s.filename)+'</h3><p>Совпало: <b>'+s.matched+'</b> · Не найдено: <b>'+s.missing+'</b> · Неоднозначно: <b>'+s.ambiguous+'</b>'+(s.manual?' · Подтверждено вручную: <b>'+s.manual+'</b>':'')+'</p>'+
+    (s.unmatched.length?'<details><summary>Показать несовпавшие товары ('+s.unmatched.length+')</summary><div class="preview-table"><table><thead><tr><th>Строка</th><th>Артикул</th><th>Название</th><th>Статус</th></tr></thead><tbody>'+
+    s.unmatched.map(x=>'<tr><td>'+x.row+'</td><td>'+esc(x.code)+'</td><td>'+esc(x.name)+'</td><td>'+(x.status==='ambiguous'?'Неоднозначно':'Не найдено')+'</td></tr>').join('')+
+    '</tbody></table></div></details>':'<p>Все товары сопоставлены.</p>')+'</section>').join('');
+  $('#preview').hidden=false;
+}
+$('#previewButton').onclick=()=>{try{showPreview();}catch(e){message('Ошибка предварительного просмотра: '+e.message);}};
+$('#previewClose').onclick=()=>{$('#preview').hidden=true;};
 function appendColumns(wb,b,sources,mode){
   const ws=wb.Sheets[b.sheet],range=XLSX.utils.decode_range(ws['!ref']||'A1');
   const originalEnd=range.e.c;
