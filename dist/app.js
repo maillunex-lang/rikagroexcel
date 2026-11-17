@@ -183,7 +183,8 @@ function appendColumns(wb,b,sources,mode){
     const index=buildIndex(s,mode),sourceWs=s.wb.Sheets[s.sheet],si=sources.indexOf(s);
     for(const sourceCol of s.selected){
       const targetCol=nextCol++;
-      const label=cleanName(s.filename)+(s.selected.length>1?' ('+colName(sourceCol)+')':'');
+      const headerCell=sourceWs[XLSX.utils.encode_cell({r:s.header,c:sourceCol})];
+      const label=headerCell?.v ?? '';
       ws[XLSX.utils.encode_cell({r:b.header,c:targetCol})]={t:'s',v:label};
       for(let row=b.header+1;row<=range.e.r;row++){
         const key=reviewKey(si,row);
